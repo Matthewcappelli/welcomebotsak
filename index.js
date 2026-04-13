@@ -18,21 +18,21 @@ const client = new Client({
   ]
 });
 
-// ---------- SLASH COMMANDS ----------
+// ---------------- Slash Commands ----------------
 const commands = [
   new SlashCommandBuilder()
     .setName("setwelcomechannel")
-    .setDescription("Set welcome channel")
+    .setDescription("Set the welcome channel")
     .addChannelOption(opt =>
       opt.setName("channel")
-        .setDescription("Channel")
+        .setDescription("Channel for welcome messages")
         .setRequired(true)
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 
   new SlashCommandBuilder()
     .setName("setwelcomeembed")
-    .setDescription("Customize welcome embed")
+    .setDescription("Customize the welcome embed")
     .addStringOption(opt =>
       opt.setName("title")
         .setDescription("Embed title")
@@ -40,7 +40,7 @@ const commands = [
     )
     .addStringOption(opt =>
       opt.setName("description")
-        .setDescription("Use {user} {server} {count}")
+        .setDescription("Use \\n for line breaks. Supports {user}, {server}, {count}")
         .setRequired(true)
     )
     .addStringOption(opt =>
@@ -48,10 +48,15 @@ const commands = [
         .setDescription("Hex color")
         .setRequired(false)
     )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+
+  new SlashCommandBuilder()
+    .setName("previewwelcome")
+    .setDescription("Preview the welcome embed")
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
 ].map(cmd => cmd.toJSON());
 
-// ---------- REGISTER COMMANDS ----------
+// ---------------- Register Commands ----------------
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 client.once("ready", async () => {
@@ -62,16 +67,16 @@ client.once("ready", async () => {
     { body: commands }
   );
 
-  console.log("Slash commands registered");
+  console.log("Slash commands registered.");
 });
 
-// ---------- HANDLE COMMANDS ----------
+// ---------------- Handle Slash Commands ----------------
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const guildId = interaction.guild.id;
 
-  // Set channel
+  // Set welcome channel
   if (interaction.commandName === "setwelcomechannel") {
     const channel = interaction.options.getChannel("channel");
 
@@ -86,7 +91,7 @@ client.on("interactionCreate", async interaction => {
     return interaction.reply(`Welcome channel set to ${channel}`);
   }
 
-  // Set embed
+  // Set welcome embed
   if (interaction.commandName === "setwelcomeembed") {
     const title = interaction.options.getString("title");
     const description = interaction.options.getString("description");
@@ -102,9 +107,39 @@ client.on("interactionCreate", async interaction => {
 
     return interaction.reply("Welcome embed updated.");
   }
+
+  // Preview welcome embed
+  if (interaction.commandName === "previewwelcome") {
+    const res = await pool.query(
+      "SELECT * FROM guilds WHERE guild_id=$1",
+      [guildId]
+    );
+
+    const data = res.rows[0];
+
+    if (!data || !data.title) {
+      return interaction.reply("No welcome embed configured yet.");
+    }
+
+    const description = data.description
+      .replaceAll("\\n", "\n")
+      .replaceAll("{user}", `<@${interaction.user.id}>`)
+      .replaceAll("{username}", interaction.user.username)
+      .replaceAll("{server}", interaction.guild.name)
+      .replaceAll("{count}", interaction.guild.memberCount);
+
+    const embed = new EmbedBuilder()
+      .setTitle(data.title)
+      .setDescription(description)
+      .setColor(data.color)
+      .setThumbnail(interaction.user.displayAvatarURL())
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
 });
 
-// ---------- WELCOME EVENT ----------
+// ---------------- Welcome Event ----------------
 client.on("guildMemberAdd", async member => {
   const res = await pool.query(
     "SELECT * FROM guilds WHERE guild_id=$1",
@@ -118,6 +153,7 @@ client.on("guildMemberAdd", async member => {
   if (!channel) return;
 
   const description = data.description
+    .replaceAll("\\n", "\n")
     .replaceAll("{user}", `<@${member.id}>`)
     .replaceAll("{username}", member.user.username)
     .replaceAll("{server}", member.guild.name)
