@@ -1,15 +1,15 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  REST, 
-  Routes, 
-  SlashCommandBuilder, 
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
   PermissionsBitField,
   EmbedBuilder
 } = require("discord.js");
 
-const fs = require("fs");
 require("dotenv").config();
+const pool = require("./db");
 
 const client = new Client({
   intents: [
@@ -18,31 +18,40 @@ const client = new Client({
   ]
 });
 
-// simple json DB
-const dbFile = "./data.json";
-let db = {};
-if (fs.existsSync(dbFile)) {
-  db = JSON.parse(fs.readFileSync(dbFile));
-}
-
-// save helper
-function saveDB() {
-  fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
-}
-
-// slash commands
+// ---------- SLASH COMMANDS ----------
 const commands = [
   new SlashCommandBuilder()
-    .setName("setwelcome")
+    .setName("setwelcomechannel")
     .setDescription("Set welcome channel")
-    .addChannelOption(option =>
-      option.setName("channel")
-        .setDescription("Welcome channel")
+    .addChannelOption(opt =>
+      opt.setName("channel")
+        .setDescription("Channel")
         .setRequired(true)
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+
+  new SlashCommandBuilder()
+    .setName("setwelcomeembed")
+    .setDescription("Customize welcome embed")
+    .addStringOption(opt =>
+      opt.setName("title")
+        .setDescription("Embed title")
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName("description")
+        .setDescription("Use {user} {server} {count}")
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName("color")
+        .setDescription("Hex color")
+        .setRequired(false)
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
 ].map(cmd => cmd.toJSON());
 
+// ---------- REGISTER COMMANDS ----------
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 client.once("ready", async () => {
@@ -56,33 +65,70 @@ client.once("ready", async () => {
   console.log("Slash commands registered");
 });
 
-// set welcome channel command
+// ---------- HANDLE COMMANDS ----------
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "setwelcome") {
+  const guildId = interaction.guild.id;
+
+  // Set channel
+  if (interaction.commandName === "setwelcomechannel") {
     const channel = interaction.options.getChannel("channel");
 
-    db[interaction.guild.id] = { welcomeChannel: channel.id };
-    saveDB();
+    await pool.query(
+      `INSERT INTO guilds (guild_id, channel_id)
+       VALUES ($1,$2)
+       ON CONFLICT (guild_id)
+       DO UPDATE SET channel_id=$2`,
+      [guildId, channel.id]
+    );
 
-    await interaction.reply(`Welcome channel set to ${channel}`);
+    return interaction.reply(`Welcome channel set to ${channel}`);
+  }
+
+  // Set embed
+  if (interaction.commandName === "setwelcomeembed") {
+    const title = interaction.options.getString("title");
+    const description = interaction.options.getString("description");
+    const color = interaction.options.getString("color") || "#00FF99";
+
+    await pool.query(
+      `INSERT INTO guilds (guild_id, title, description, color)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (guild_id)
+       DO UPDATE SET title=$2, description=$3, color=$4`,
+      [guildId, title, description, color]
+    );
+
+    return interaction.reply("Welcome embed updated.");
   }
 });
 
-// welcome message
-client.on("guildMemberAdd", member => {
-  const guildConfig = db[member.guild.id];
-  if (!guildConfig) return;
+// ---------- WELCOME EVENT ----------
+client.on("guildMemberAdd", async member => {
+  const res = await pool.query(
+    "SELECT * FROM guilds WHERE guild_id=$1",
+    [member.guild.id]
+  );
 
-  const channel = member.guild.channels.cache.get(guildConfig.welcomeChannel);
+  const data = res.rows[0];
+  if (!data || !data.channel_id || !data.title) return;
+
+  const channel = member.guild.channels.cache.get(data.channel_id);
   if (!channel) return;
 
+  const description = data.description
+    .replaceAll("{user}", `<@${member.id}>`)
+    .replaceAll("{username}", member.user.username)
+    .replaceAll("{server}", member.guild.name)
+    .replaceAll("{count}", member.guild.memberCount);
+
   const embed = new EmbedBuilder()
-    .setTitle("👋 Welcome!")
-    .setDescription(`Welcome **${member.user.username}** to the server!`)
+    .setTitle(data.title)
+    .setDescription(description)
+    .setColor(data.color)
     .setThumbnail(member.user.displayAvatarURL())
-    .setColor("#00FF99");
+    .setTimestamp();
 
   channel.send({ embeds: [embed] });
 });
